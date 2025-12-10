@@ -1,0 +1,627 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model applications {
+  id                     String                   @id
+  jobId                  String
+  jobseekerId            String
+  coverLetter            String?
+  resumeUrl              String?
+  portfolioUrl           String?
+  answers                Json?
+  status                 ApplicationStatus        @default(PENDING)
+  appliedAt              DateTime                 @default(now())
+  reviewedAt             DateTime?
+  interviewDate          DateTime?
+  respondedAt            DateTime?
+  recruiterNotes         String?
+  rejectionReason        String?
+  viewed                 Boolean                  @default(false)
+  viewedAt               DateTime?
+  createdAt              DateTime                 @default(now())
+  updatedAt              DateTime
+  jobs                   jobs                     @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  jobseekers             jobseekers               @relation(fields: [jobseekerId], references: [id], onDelete: Cascade)
+  interview_participants interview_participants[]
+
+  @@unique([jobId, jobseekerId])
+  @@index([appliedAt])
+  @@index([jobId])
+  @@index([jobseekerId])
+  @@index([status])
+}
+
+model audit_logs {
+  id         String    @id
+  userId     String?
+  userRole   UserRole?
+  action     String
+  targetType String?
+  targetId   String?
+  changes    Json?
+  ipAddress  String?
+  userAgent  String?
+  createdAt  DateTime  @default(now())
+
+  @@index([action])
+  @@index([createdAt])
+  @@index([userId])
+}
+
+model certifications {
+  id                  String     @id
+  jobseekerId         String
+  name                String
+  issuingOrganization String
+  issueDate           DateTime?
+  expiryDate          DateTime?
+  credentialId        String?
+  credentialUrl       String?
+  certificateUrl      String?
+  description         String?
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime
+  jobseekers          jobseekers @relation(fields: [jobseekerId], references: [id], onDelete: Cascade)
+
+  @@index([jobseekerId])
+}
+
+model companies {
+  id              String        @id
+  name            String
+  slug            String        @unique
+  logo            String?
+  tagline         String?
+  description     String?
+  industry        String
+  companySize     String
+  foundedYear     Int?
+  email           String
+  phone           String?
+  website         String?
+  address         String
+  city            String
+  province        String
+  postalCode      String?
+  linkedinUrl     String?
+  facebookUrl     String?
+  twitterUrl      String?
+  instagramUrl    String?
+  npwp            String?
+  aktaPendirian   String?
+  siup            String?
+  domisili        String?
+  status          CompanyStatus @default(PENDING_VERIFICATION)
+  verified        Boolean       @default(false)
+  verifiedAt      DateTime?
+  rejectionReason String?
+  bio             String?       @db.Text
+  culture         String?
+  benefits        String[]
+  gallery         String[]
+  totalEmployees  Int?
+  totalHired      Int           @default(0)
+  rating          Float         @default(0)
+  totalReviews    Int           @default(0)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime
+  jobs            jobs[]
+  recruiters      recruiters[]
+  reviews         reviews[]
+
+  @@index([city])
+  @@index([industry])
+  @@index([slug])
+  @@index([status])
+}
+
+model educations {
+  id           String     @id
+  jobseekerId  String
+  institution  String
+  degree       String
+  fieldOfStudy String
+  level        String
+  startDate    DateTime?
+  endDate      DateTime?
+  isCurrent    Boolean    @default(false)
+  gpa          Float?
+  description  String?
+  diplomaUrl   String?
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime
+  jobseekers   jobseekers @relation(fields: [jobseekerId], references: [id], onDelete: Cascade)
+
+  @@index([jobseekerId])
+}
+
+model interview_participants {
+  id            String       @id
+  interviewId   String
+  applicationId String
+  invitedAt     DateTime     @default(now())
+  respondedAt   DateTime?
+  status        String       @default("PENDING")
+  feedback      String?
+  rating        Int?
+  notes         String?
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime
+  applications  applications @relation(fields: [applicationId], references: [id], onDelete: Cascade)
+  interviews    interviews   @relation(fields: [interviewId], references: [id], onDelete: Cascade)
+
+  @@unique([interviewId, applicationId])
+  @@index([applicationId])
+  @@index([interviewId])
+}
+
+model interviews {
+  id                     String                   @id
+  recruiterId            String
+  jobId                  String?
+  title                  String
+  scheduledAt            DateTime
+  duration               Int                      @default(60)
+  meetingType            String                   @default("GOOGLE_MEET")
+  meetingUrl             String?
+  location               String?
+  description            String?
+  notes                  String?
+  status                 String                   @default("SCHEDULED")
+  createdAt              DateTime                 @default(now())
+  updatedAt              DateTime
+  interview_participants interview_participants[]
+  jobs                   jobs?                    @relation(fields: [jobId], references: [id])
+  recruiters             recruiters               @relation(fields: [recruiterId], references: [id])
+
+  @@index([jobId])
+  @@index([recruiterId])
+  @@index([scheduledAt])
+}
+
+model job_skills {
+  id               String   @id @default(cuid())
+  jobId            String
+  skillId          String
+  isRequired       Boolean  @default(true)
+  proficiencyLevel String?
+  createdAt        DateTime @default(now())
+  jobs             jobs     @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  skills           skills   @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, skillId])
+  @@index([jobId])
+  @@index([skillId])
+}
+
+model jobs {
+  id                  String          @id @default(cuid())
+  companyId           String
+  recruiterId         String
+  title               String
+  slug                String          @unique
+  description         String
+  requirements        String
+  responsibilities    String
+  jobType             JobType
+  level               JobLevel
+  category            String
+  location            String
+  city                String
+  province            String
+  isRemote            Boolean         @default(false)
+  salaryMin           Int?
+  salaryMax           Int?
+  salaryType          String?
+  showSalary          Boolean         @default(true)
+  benefits            String[]
+  numberOfPositions   Int             @default(1)
+  minExperience       Int?
+  maxExperience       Int?
+  educationLevel      EducationLevel?
+  applicationDeadline DateTime?
+  applicationEmail    String?
+  applicationUrl      String?
+  externalApply       Boolean         @default(false)
+  isActive            Boolean         @default(true)
+  isFeatured          Boolean         @default(false)
+  isPremium           Boolean         @default(false)
+  viewCount           Int             @default(0)
+  applicationCount    Int             @default(0)
+  metaTitle           String?
+  metaDescription     String?
+  publishedAt         DateTime?
+  closedAt            DateTime?
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+  applications        applications[]
+  interviews          interviews[]
+  job_skills          job_skills[]
+  companies           companies       @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  recruiters          recruiters      @relation(fields: [recruiterId], references: [id])
+  saved_jobs          saved_jobs[]
+
+  @@index([category])
+  @@index([city])
+  @@index([companyId])
+  @@index([isActive])
+  @@index([jobType])
+  @@index([level])
+  @@index([publishedAt])
+  @@index([recruiterId])
+  @@index([slug])
+}
+
+model jobseeker_skills {
+  id                String     @id
+  jobseekerId       String
+  skillId           String
+  proficiencyLevel  String?
+  yearsOfExperience Int?
+  createdAt         DateTime   @default(now())
+  jobseekers        jobseekers @relation(fields: [jobseekerId], references: [id], onDelete: Cascade)
+  skills            skills     @relation(fields: [skillId], references: [id], onDelete: Cascade)
+
+  @@unique([jobseekerId, skillId])
+  @@index([jobseekerId])
+  @@index([skillId])
+}
+
+model jobseekers {
+  id                  String             @id
+  userId              String             @unique
+  photo               String?
+  firstName           String?
+  lastName            String?
+  dateOfBirth         DateTime?
+  gender              String?
+  religion            String?
+  maritalStatus       String?
+  nationality         String?
+  idNumber            String?
+  phone               String?
+  email               String?
+  address             String?
+  city                String?
+  province            String?
+  postalCode          String?
+  currentTitle        String?
+  summary             String?
+  linkedinUrl         String?
+  githubUrl           String?
+  portfolioUrl        String?
+  websiteUrl          String?
+  resumeUrl           String?
+  cvUrl               String?
+  desiredJobTitle     String?
+  desiredSalaryMin    Int?
+  desiredSalaryMax    Int?
+  preferredLocation   String?
+  preferredJobType    String?
+  willingToRelocate   Boolean            @default(false)
+  availableFrom       DateTime?
+  profileCompleted    Boolean            @default(false)
+  profileCompleteness Int                @default(0)
+  isEmployed          Boolean            @default(false)
+  isLookingForJob     Boolean            @default(true)
+  employedAt          DateTime?
+  employedCompany     String?
+  createdAt           DateTime           @default(now())
+  updatedAt           DateTime
+  applications        applications[]
+  certifications      certifications[]
+  educations          educations[]
+  jobseeker_skills    jobseeker_skills[]
+  users               users              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  profile_views       profile_views[]
+  reviews             reviews[]
+  saved_jobs          saved_jobs[]
+  work_experiences    work_experiences[]
+}
+
+model messages {
+  id                               String    @id
+  senderId                         String
+  receiverId                       String
+  subject                          String?
+  content                          String
+  isRead                           Boolean   @default(false)
+  readAt                           DateTime?
+  jobId                            String?
+  applicationId                    String?
+  createdAt                        DateTime  @default(now())
+  users_messages_receiverIdTousers users     @relation("messages_receiverIdTousers", fields: [receiverId], references: [id], onDelete: Cascade)
+  users_messages_senderIdTousers   users     @relation("messages_senderIdTousers", fields: [senderId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@index([isRead])
+  @@index([receiverId])
+  @@index([senderId])
+}
+
+model notifications {
+  id        String           @id
+  userId    String
+  type      NotificationType
+  title     String
+  message   String
+  link      String?
+  actionUrl String?
+  isRead    Boolean          @default(false)
+  readAt    DateTime?
+  metadata  Json?
+  createdAt DateTime         @default(now())
+  users     users            @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@index([isRead])
+  @@index([type])
+  @@index([userId])
+}
+
+model profile_views {
+  id            String     @id
+  jobseekerId   String
+  viewerId      String?
+  viewerRole    UserRole?
+  viewerCompany String?
+  ipAddress     String?
+  userAgent     String?
+  createdAt     DateTime   @default(now())
+  jobseekers    jobseekers @relation(fields: [jobseekerId], references: [id], onDelete: Cascade)
+
+  @@index([createdAt])
+  @@index([jobseekerId])
+}
+
+model recruiters {
+  id                    String       @id
+  userId                String       @unique
+  companyId             String
+  firstName             String
+  lastName              String
+  position              String
+  phone                 String?
+  department            String?
+  photoUrl              String?
+  canPostJobs           Boolean      @default(true)
+  canReviewApplications Boolean      @default(true)
+  canManageCompany      Boolean      @default(false)
+  isVerified            Boolean      @default(false)
+  createdAt             DateTime     @default(now())
+  updatedAt             DateTime
+  interviews            interviews[]
+  jobs                  jobs[]
+  companies             companies    @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  users                 users        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reviews               reviews[]
+
+  @@index([companyId])
+  @@index([userId])
+}
+
+model reports {
+  id             String       @id
+  reporterId     String
+  reportType     ReportType
+  targetType     String
+  targetId       String
+  reason         String
+  description    String?
+  evidence       String[]
+  status         ReportStatus @default(PENDING)
+  assignedTo     String?
+  moderatorNotes String?
+  resolution     String?
+  resolvedAt     DateTime?
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime
+  users          users        @relation(fields: [reporterId], references: [id], onDelete: Cascade)
+
+  @@index([reportType])
+  @@index([reporterId])
+  @@index([status])
+  @@index([targetType])
+}
+
+model reviews {
+  id               String      @id
+  companyId        String
+  jobseekerId      String?
+  recruiterId      String?
+  rating           Int
+  title            String
+  content          String
+  workLifeBalance  Int?
+  compensation     Int?
+  careerGrowth     Int?
+  management       Int?
+  culture          Int?
+  position         String?
+  employment       String?
+  employmentLength String?
+  isVerified       Boolean     @default(false)
+  isAnonymous      Boolean     @default(false)
+  isApproved       Boolean     @default(false)
+  moderatorNotes   String?
+  flagCount        Int         @default(0)
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime
+  companies        companies   @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  jobseekers       jobseekers? @relation(fields: [jobseekerId], references: [id], onDelete: Cascade)
+  recruiters       recruiters? @relation(fields: [recruiterId], references: [id], onDelete: Cascade)
+
+  @@index([companyId])
+  @@index([isApproved])
+  @@index([jobseekerId])
+  @@index([rating])
+}
+
+model saved_jobs {
+  id          String     @id
+  jobId       String
+  jobseekerId String
+  notes       String?
+  createdAt   DateTime   @default(now())
+  jobs        jobs       @relation(fields: [jobId], references: [id], onDelete: Cascade)
+  jobseekers  jobseekers @relation(fields: [jobseekerId], references: [id], onDelete: Cascade)
+
+  @@unique([jobId, jobseekerId])
+  @@index([jobId])
+  @@index([jobseekerId])
+}
+
+model settings {
+  id          String   @id
+  key         String   @unique
+  value       String
+  description String?
+  updatedAt   DateTime
+
+  @@index([key])
+}
+
+model skills {
+  id               String             @id @default(cuid())
+  name             String             @unique
+  category         String?
+  createdAt        DateTime           @default(now())
+  job_skills       job_skills[]
+  jobseeker_skills jobseeker_skills[]
+
+  @@index([category])
+  @@index([name])
+}
+
+model users {
+  id                                  String          @id
+  email                               String          @unique
+  password                            String
+  role                                UserRole
+  status                              UserStatus      @default(ACTIVE)
+  emailVerified                       Boolean         @default(false)
+  phoneVerified                       Boolean         @default(false)
+  lastLogin                           DateTime?
+  createdAt                           DateTime        @default(now())
+  updatedAt                           DateTime
+  jobseekers                          jobseekers?
+  messages_messages_receiverIdTousers messages[]      @relation("messages_receiverIdTousers")
+  messages_messages_senderIdTousers   messages[]      @relation("messages_senderIdTousers")
+  notifications                       notifications[]
+  recruiters                          recruiters?
+  reports                             reports[]
+
+  @@index([email])
+  @@index([role])
+  @@index([status])
+}
+
+model work_experiences {
+  id           String     @id
+  jobseekerId  String
+  company      String
+  position     String
+  location     String?
+  startDate    DateTime?
+  endDate      DateTime?
+  isCurrent    Boolean    @default(false)
+  description  String?
+  achievements String[]
+  createdAt    DateTime   @default(now())
+  updatedAt    DateTime
+  jobseekers   jobseekers @relation(fields: [jobseekerId], references: [id], onDelete: Cascade)
+
+  @@index([jobseekerId])
+}
+
+enum ApplicationStatus {
+  PENDING
+  REVIEWING
+  SHORTLISTED
+  INTERVIEW_SCHEDULED
+  INTERVIEW_COMPLETED
+  ACCEPTED
+  REJECTED
+  WITHDRAWN
+}
+
+enum CompanyStatus {
+  PENDING_VERIFICATION
+  VERIFIED
+  REJECTED
+  SUSPENDED
+}
+
+enum EducationLevel {
+  SMA
+  D3
+  S1
+  S2
+  S3
+}
+
+enum JobLevel {
+  ENTRY_LEVEL
+  JUNIOR
+  MID_LEVEL
+  SENIOR
+  LEAD
+  MANAGER
+  DIRECTOR
+  EXECUTIVE
+}
+
+enum JobType {
+  FULL_TIME
+  PART_TIME
+  CONTRACT
+  FREELANCE
+  INTERNSHIP
+}
+
+enum NotificationType {
+  APPLICATION_UPDATE
+  NEW_JOB_MATCH
+  MESSAGE
+  INTERVIEW_SCHEDULED
+  PROFILE_VIEW
+  COMPANY_UPDATE
+  SYSTEM
+}
+
+enum ReportStatus {
+  PENDING
+  INVESTIGATING
+  RESOLVED
+  REJECTED
+}
+
+enum ReportType {
+  FAKE_JOB
+  SCAM
+  INAPPROPRIATE_CONTENT
+  SPAM
+  DISCRIMINATION
+  HARASSMENT
+  OTHER
+}
+
+enum UserRole {
+  JOBSEEKER
+  RECRUITER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+  INACTIVE
+}

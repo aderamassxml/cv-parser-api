@@ -154,71 +154,129 @@ graph LR
 // Di Next.js API Route atau Server Action
 import { prisma } from '@/lib/prisma'
 
-async function getJobRequirements(jobId: string) {
-  const job = await prisma.job.findUnique({
+async function getJobWithSkills(jobId: string) {
+  const job = await prisma.jobs.findUnique({
     where: { id: jobId },
     select: {
       id: true,
       title: true,
-      requiredSkills: true, // Array of strings
+      companyId: true,
+      job_skills: {
+        select: {
+          skills: {
+            select: {
+              name: true
+            }
+          },
+          isRequired: true,
+          proficiencyLevel: true
+        }
+      }
     }
   })
   
-  return job
+  // Extract skill names
+  const requiredSkills = job.job_skills
+    .filter(js => js.isRequired)
+    .map(js => js.skills.name)
+  
+  return {
+    ...job,
+    requiredSkills
+  }
 }
 ```
 
 ### **2. Kirim Request ke CV Parser API**
 
 ```typescript
-// Di Next.js API Route
+// Di Next.js API Route: /api/process-cv
 export async function POST(request: Request) {
-  const { applicationId, jobId, cvUrl } = await request.json()
+  const { applicationId } = await request.json()
   
-  // 1. Get job requirements dari Prisma
-  const job = await getJobRequirements(jobId)
+  // 1. Get application data
+  const application = await prisma.applications.findUnique({
+    where: { id: applicationId },
+    include: {
+      jobs: {
+        include: {
+          job_skills: {
+            where: { isRequired: true },
+            include: {
+              skills: true
+            }
+          }
+        }
+      },
+      jobseekers: {
+        select: {
+          resumeUrl: true,
+          cvUrl: true
+        }
+      }
+    }
+  })
   
-  // 2. Call CV Parser API
-  const response = await fetch('https://your-cv-parser.railway.app/api/process-complete', {
+  if (!application) {
+    return Response.json({ error: 'Application not found' }, { status: 404 })
+  }
+  
+  // 2. Get CV URL (prioritas: resumeUrl > cvUrl dari application > cvUrl dari jobseeker)
+  const cvUrl = application.resumeUrl || 
+                application.jobseekers.cvUrl || 
+                application.jobseekers.resumeUrl
+  
+  if (!cvUrl) {
+    return Response.json({ error: 'No CV found' }, { status: 400 })
+  }
+  
+  // 3. Extract required skills
+  const requiredSkills = application.jobs.job_skills.map(js => js.skills.name)
+  
+  // 4. Call CV Parser API
+  const response = await fetch(process.env.CV_PARSER_API_URL + '/api/process-complete', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
     },
     body: JSON.stringify({
       cv_url: cvUrl,
-      job_id: jobId,
-      application_id: applicationId,
-      job_title: job.title,
-      required_skills: job.requiredSkills,
+      job_id: application.jobId,
+      application_id: application.id,
+      job_title: application.jobs.title,
+      required_skills: requiredSkills,
     }),
   })
   
   const result = await response.json()
   
-  // 3. Update application status di Prisma
+  // 5. Update application status di Prisma
   if (result.success) {
     // RECOMMENDED - Save full candidate data
-    await prisma.application.update({
+    await prisma.applications.update({
       where: { id: applicationId },
       data: {
-        status: 'RECOMMENDED',
-        matchScore: result.data.recommendation.score,
-        matchedSkills: result.data.matching.statistics.matched_count,
-        totalRequiredSkills: result.data.matching.statistics.total_required,
-        parsedName: result.data.candidate.name,
-        parsedEmail: result.data.candidate.email,
-        parsedPhone: result.data.candidate.phone,
-        candidateSkills: result.data.candidate.skills,
-        processedAt: new Date(),
+        status: 'SHORTLISTED', // atau 'REVIEWING'
+        recruiterNotes: JSON.stringify({
+          aiParsing: {
+            matchScore: result.data.recommendation.score,
+            matchedSkills: result.data.matching.statistics.matched_count,
+            totalRequired: result.data.matching.statistics.total_required,
+            candidateSkills: result.data.candidate.skills,
+            parsedAt: new Date(),
+          }
+        }),
+        reviewedAt: new Date(),
       },
     })
   } else if (result.reason === 'NOT_RECOMMENDED') {
-    // NOT RECOMMENDED - Just mark as rejected, don't save candidate data
-    await prisma.application.update({
+    // NOT RECOMMENDED - Mark as rejected
+    await prisma.applications.update({
       where: { id: applicationId },
       data: {
         status: 'REJECTED',
-        processedAt: new Date(),
+        rejectionReason: 'No matching skills found via AI screening',
+        reviewedAt: new Date(),
       },
     })
   }
@@ -277,45 +335,143 @@ export function ApplicationProcessor({ applicationId, jobId, cvUrl }) {
 
 ---
 
-## 🗄️ Schema Prisma yang Disarankan
+## 🗄️ Schema Prisma (Actual Structure)
+
+Berdasarkan schema rekan Anda, struktur yang sudah ada:
+
+### **Relevant Models:**
 
 ```prisma
-model Job {
-  id              String   @id @default(cuid())
-  title           String
-  description     String
-  requiredSkills  String[] // Array of skill strings
-  applications    Application[]
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+model applications {
+  id                     String                   @id
+  jobId                  String
+  jobseekerId            String
+  coverLetter            String?
+  resumeUrl              String?              // CV URL dari application
+  portfolioUrl           String?
+  answers                Json?
+  status                 ApplicationStatus    @default(PENDING)
+  appliedAt              DateTime             @default(now())
+  reviewedAt             DateTime?
+  recruiterNotes         String?              // Bisa simpan AI parsing result di sini (JSON)
+  rejectionReason        String?
+  // ... other fields
+  jobs                   jobs                 @relation(...)
+  jobseekers             jobseekers           @relation(...)
 }
 
-model Application {
-  id                    String   @id @default(cuid())
-  jobId                 String
-  job                   Job      @relation(fields: [jobId], references: [id])
+model jobs {
+  id                  String          @id @default(cuid())
+  companyId           String
+  recruiterId         String
+  title               String
+  description         String
+  requirements        String
+  // ... other fields
+  job_skills          job_skills[]    // Skills untuk job ini
+  applications        applications[]
+}
+
+model job_skills {
+  id               String   @id @default(cuid())
+  jobId            String
+  skillId          String
+  isRequired       Boolean  @default(true)     // Apakah skill ini required?
+  proficiencyLevel String?                     // Level yang dibutuhkan
+  jobs             jobs     @relation(...)
+  skills           skills   @relation(...)
   
-  // CV Info
-  cvUrl                 String
-  
-  // Parsed Data
-  parsedName            String?
-  parsedEmail           String?
-  parsedPhone           String?
-  candidateSkills       String[]
-  
-  // Matching Results
-  status                String?  // RECOMMENDED or NOT RECOMMENDED
-  matchScore            Float?
-  matchedSkills         Int?
-  totalRequiredSkills   Int?
-  
-  // Timestamps
-  processedAt           DateTime?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  @@unique([jobId, skillId])
+}
+
+model skills {
+  id               String             @id @default(cuid())
+  name             String             @unique
+  category         String?
+  job_skills       job_skills[]
+  jobseeker_skills jobseeker_skills[]
+}
+
+model jobseekers {
+  id                  String             @id
+  userId              String             @unique
+  firstName           String?
+  lastName            String?
+  email               String?
+  phone               String?
+  resumeUrl           String?            // CV URL dari jobseeker profile
+  cvUrl               String?            // Alternative CV URL
+  // ... other fields
+  applications        applications[]
+  jobseeker_skills    jobseeker_skills[]
 }
 ```
+
+### **How to Use:**
+
+#### **1. Get Required Skills untuk Job:**
+
+```typescript
+const job = await prisma.jobs.findUnique({
+  where: { id: jobId },
+  include: {
+    job_skills: {
+      where: { isRequired: true },  // Hanya required skills
+      include: {
+        skills: true
+      }
+    }
+  }
+})
+
+// Extract skill names
+const requiredSkills = job.job_skills.map(js => js.skills.name)
+// Result: ["Quality Control", "Leadership", "Microsoft Excel"]
+```
+
+#### **2. Store AI Parsing Results:**
+
+Gunakan field `recruiterNotes` di `applications` untuk simpan hasil parsing:
+
+```typescript
+await prisma.applications.update({
+  where: { id: applicationId },
+  data: {
+    status: 'SHORTLISTED',  // atau 'REVIEWING'
+    recruiterNotes: JSON.stringify({
+      aiParsing: {
+        parsedAt: new Date(),
+        matchScore: 85.5,
+        matchedSkills: 4,
+        totalRequired: 5,
+        candidateSkills: ["Quality Control", "Leadership", ...],
+        recommendation: "RECOMMENDED"
+      }
+    }),
+    reviewedAt: new Date()
+  }
+})
+```
+
+#### **3. Alternative: Add New Fields (Optional)**
+
+Jika ingin fields dedicated untuk AI parsing, bisa tambahkan migration:
+
+```prisma
+model applications {
+  // ... existing fields ...
+  
+  // AI Parsing fields (optional)
+  aiMatchScore        Float?
+  aiMatchedSkills     Int?
+  aiTotalRequired     Int?
+  aiCandidateSkills   String[]  // Array of matched skills
+  aiProcessedAt       DateTime?
+  aiRecommendation    String?   // "RECOMMENDED" or "NOT_RECOMMENDED"
+}
+```
+
+Tapi untuk MVP, cukup gunakan `recruiterNotes` (JSON) yang sudah ada.
 
 ---
 
