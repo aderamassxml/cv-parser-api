@@ -1,0 +1,448 @@
+# app.py - Railway-Ready CV Parser API
+
+import os
+import re
+import json
+import requests
+from pathlib import Path
+from typing import List, Dict, Optional
+from datetime import datetime
+
+# Flask
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+
+# NLP & NER
+import spacy
+import nltk
+from nltk.tokenize import sent_tokenize
+
+# Fuzzy Matching
+from rapidfuzz import fuzz
+
+# Document Processing
+import pdfplumber
+from docx import Document
+
+# ============================================
+# CONFIGURATION
+# ============================================
+
+app = Flask(__name__)
+CORS(app)
+
+# Environment
+PORT = int(os.environ.get('PORT', 5000))
+FLASK_ENV = os.environ.get('FLASK_ENV', 'development')
+
+# Folders
+TEMP_FOLDER = 'temp'
+UPLOAD_FOLDER = 'uploads'
+os.makedirs(TEMP_FOLDER, exist_ok=True)
+os.makedirs(UPLOAD_FOLDER, exist_ok=True)
+
+# Load NLP Model
+try:
+    nlp = spacy.load('en_core_web_sm')
+except OSError:
+    print("⚠️  spaCy model not found. Downloading...")
+    os.system('python -m spacy download en_core_web_sm')
+    nlp = spacy.load('en_core_web_sm')
+
+# Download NLTK data
+try:
+    nltk.data.find('tokenizers/punkt')
+except LookupError:
+    nltk.download('punkt')
+    nltk.download('stopwords')
+
+# ============================================
+# SKILL TAXONOMY
+# ============================================
+
+SKILL_TAXONOMY = {
+    "textile": [
+        "spinning", "weaving", "knitting", "dyeing", "finishing",
+        "quality control", "textile testing", "fabric inspection",
+        "color matching", "pattern making", "garment construction"
+    ],
+    "manufacturing": [
+        "lean manufacturing", "six sigma", "production planning",
+        "inventory management", "quality assurance", "iso 9001",
+        "5s", "kaizen", "preventive maintenance"
+    ],
+    "tools": [
+        "microsoft excel", "microsoft office", "erp system",
+        "cad", "autocad", "sap", "oracle"
+    ],
+    "soft_skills": [
+        "leadership", "teamwork", "communication", "problem solving",
+        "time management", "project management"
+    ]
+}
+
+ALL_SKILLS = []
+for category, skills in SKILL_TAXONOMY.items():
+    ALL_SKILLS.extend(skills)
+
+# ============================================
+# SYNONYM MAPPING
+# ============================================
+
+SYNONYMS = {
+    "excel": ["microsoft excel", "ms excel", "spreadsheet"],
+    "word": ["microsoft word", "ms word"],
+    "powerpoint": ["microsoft powerpoint", "ms powerpoint", "ppt"],
+    "quality control": ["qc", "quality assurance", "qa"],
+    "leadership": ["team leadership", "people management", "supervisi"],
+    "lean manufacturing": ["lean", "lean production", "5s", "kaizen"],
+}
+
+# ============================================
+# SKILL INFERENCE PATTERNS
+# ============================================
+
+SKILL_PATTERNS = {
+    r'(inspeksi|pemeriksaan|quality check)\s+(kualitas|produk)': 'Quality Control',
+    r'(memimpin|supervisi|mengawasi)\s+tim': 'Leadership',
+    r'(excel|spreadsheet)': 'Microsoft Excel',
+    r'(lean|5s|kaizen)': 'Lean Manufacturing',
+    r'(maintenance|perawatan)\s+mesin': 'Maintenance Management',
+}
+
+# ============================================
+# CV PARSER CLASS
+# ============================================
+
+class CVParser:
+    def __init__(self):
+        self.nlp = nlp
+    
+    def extract_text_from_pdf(self, file_path: str) -> str:
+        text = ""
+        try:
+            with pdfplumber.open(file_path) as pdf:
+                for page in pdf.pages:
+                    page_text = page.extract_text()
+                    if page_text:
+                        text += page_text + "\n"
+        except Exception as e:
+            print(f"Error extracting PDF: {e}")
+        return text
+    
+    def extract_text_from_docx(self, file_path: str) -> str:
+        text = ""
+        try:
+            doc = Document(file_path)
+            for paragraph in doc.paragraphs:
+                text += paragraph.text + "\n"
+        except Exception as e:
+            print(f"Error extracting DOCX: {e}")
+        return text
+    
+    def extract_contact_info(self, text: str) -> Dict:
+        email_pattern = r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b'
+        emails = re.findall(email_pattern, text)
+        
+        phone_patterns = [
+            r'\+?62\s?\d{2,3}[-.\s]?\d{3,4}[-.\s]?\d{3,4}',
+            r'0\d{2,3}[-.\s]?\d{3,4}[-.\s]?\d{3,4}',
+        ]
+        phone = None
+        for pattern in phone_patterns:
+            phones = re.findall(pattern, text)
+            if phones:
+                phone = phones[0]
+                break
+        
+        return {
+            'email': emails[0] if emails else None,
+            'phone': phone
+        }
+    
+    def extract_name(self, text: str) -> Optional[str]:
+        lines = text.split('\n')[:10]
+        for line in lines:
+            line = line.strip()
+            if len(line.split()) >= 2 and len(line.split()) <= 4:
+                if line.isupper() or line.istitle():
+                    return line
+        
+        doc = self.nlp(text[:500])
+        for ent in doc.ents:
+            if ent.label_ == 'PERSON':
+                return ent.text
+        
+        return None
+    
+    def extract_skills(self, text: str) -> List[str]:
+        text_lower = text.lower()
+        found_skills = set()
+        
+        # Keyword matching
+        for skill in ALL_SKILLS:
+            if skill.lower() in text_lower:
+                found_skills.add(skill.title())
+        
+        # Pattern matching
+        for pattern, skill in SKILL_PATTERNS.items():
+            if re.search(pattern, text_lower):
+                found_skills.add(skill)
+        
+        return list(found_skills)
+    
+    def parse(self, file_path: str) -> Dict:
+        # Extract text
+        if file_path.endswith('.pdf'):
+            text = self.extract_text_from_pdf(file_path)
+        elif file_path.endswith('.docx'):
+            text = self.extract_text_from_docx(file_path)
+        else:
+            raise ValueError("Unsupported file format")
+        
+        # Extract information
+        name = self.extract_name(text)
+        contact = self.extract_contact_info(text)
+        skills = self.extract_skills(text)
+        
+        return {
+            'name': name,
+            'email': contact['email'],
+            'phone': contact['phone'],
+            'skills': skills,
+            'raw_text': text[:1000] if len(text) > 1000 else text
+        }
+
+# ============================================
+# SKILL MATCHER CLASS
+# ============================================
+
+class SkillMatcher:
+    def __init__(self, threshold: int = 75):
+        self.threshold = threshold
+    
+    def get_synonyms(self, skill: str) -> List[str]:
+        skill_lower = skill.lower()
+        expanded = [skill_lower]
+        
+        for key, synonyms in SYNONYMS.items():
+            if skill_lower in synonyms or skill_lower == key:
+                expanded.extend(synonyms)
+                expanded.append(key)
+        
+        return list(set(expanded))
+    
+    def match_single_skill(self, required: str, candidate_skills: List[str]) -> Dict:
+        required_synonyms = self.get_synonyms(required)
+        
+        best_match = None
+        best_score = 0
+        match_type = None
+        
+        for cand_skill in candidate_skills:
+            cand_synonyms = self.get_synonyms(cand_skill)
+            
+            for req_syn in required_synonyms:
+                for cand_syn in cand_synonyms:
+                    score = fuzz.token_set_ratio(req_syn, cand_syn)
+                    
+                    if score > best_score:
+                        best_score = score
+                        best_match = cand_skill
+                        
+                        if score == 100:
+                            match_type = "Exact"
+                        elif req_syn != required or cand_syn != cand_skill:
+                            match_type = "Synonym"
+                        else:
+                            match_type = "Fuzzy"
+        
+        is_match = best_score >= self.threshold
+        
+        return {
+            'required': required,
+            'matched': best_match if is_match else None,
+            'score': best_score,
+            'is_match': is_match,
+            'match_type': match_type if is_match else None
+        }
+    
+    def match_all(self, required_skills: List[str], candidate_skills: List[str]) -> Dict:
+        matches = []
+        
+        for req_skill in required_skills:
+            match_result = self.match_single_skill(req_skill, candidate_skills)
+            matches.append(match_result)
+        
+        matched_skills = [m for m in matches if m['is_match']]
+        match_percentage = (len(matched_skills) / len(required_skills) * 100) if required_skills else 0
+        
+        return {
+            'matches': matches,
+            'statistics': {
+                'total_required': len(required_skills),
+                'matched_count': len(matched_skills),
+                'match_percentage': round(match_percentage, 2)
+            }
+        }
+
+# ============================================
+# INITIALIZE
+# ============================================
+
+cv_parser = CVParser()
+skill_matcher = SkillMatcher(threshold=75)
+
+# ============================================
+# API ENDPOINTS
+# ============================================
+
+@app.route('/', methods=['GET'])
+def home():
+    return jsonify({
+        'message': 'CV Parser & Skill Matcher API',
+        'version': '1.0.0',
+        'status': 'running',
+        'endpoints': {
+            'health': '/api/health',
+            'parse': '/api/parse-cv',
+            'match': '/api/match-skills',
+            'process': '/api/process-complete'
+        }
+    })
+
+@app.route('/api/health', methods=['GET'])
+def health_check():
+    return jsonify({
+        'status': 'healthy',
+        'timestamp': datetime.now().isoformat(),
+        'version': '1.0.0'
+    })
+
+@app.route('/api/process-complete', methods=['POST'])
+def process_complete():
+    """
+    Process CV from URL (Supabase Storage)
+    
+    Request Body (JSON):
+    {
+        "cv_url": "https://...",
+        "job_title": "...",
+        "required_skills": [...]
+    }
+    """
+    try:
+        data = request.get_json()
+        
+        cv_url = data.get('cv_url')
+        job_title = data.get('job_title', 'Unknown Position')
+        required_skills = data.get('required_skills', [])
+        
+        if not cv_url:
+            return jsonify({
+                'success': False,
+                'error': 'cv_url is required'
+            }), 400
+        
+        if not required_skills:
+            return jsonify({
+                'success': False,
+                'error': 'required_skills is required'
+            }), 400
+        
+        # Download CV from URL
+        print(f"📥 Downloading CV from: {cv_url}")
+        cv_response = requests.get(cv_url, timeout=30)
+        
+        if cv_response.status_code != 200:
+            return jsonify({
+                'success': False,
+                'error': f'Failed to download CV: HTTP {cv_response.status_code}'
+            }), 400
+        
+        # Determine file extension
+        content_type = cv_response.headers.get('Content-Type', '')
+        if 'pdf' in content_type or cv_url.endswith('.pdf'):
+            ext = '.pdf'
+        elif 'word' in content_type or cv_url.endswith('.docx'):
+            ext = '.docx'
+        else:
+            ext = '.pdf'  # Default
+        
+        # Save temporarily
+        temp_filename = f"temp_{os.urandom(8).hex()}{ext}"
+        temp_path = os.path.join(TEMP_FOLDER, temp_filename)
+        
+        with open(temp_path, 'wb') as f:
+            f.write(cv_response.content)
+        
+        print(f"✅ CV saved to: {temp_path}")
+        
+        # Parse CV
+        print("🔍 Parsing CV...")
+        parsed_cv = cv_parser.parse(temp_path)
+        
+        # Match skills
+        print("🎯 Matching skills...")
+        match_result = skill_matcher.match_all(required_skills, parsed_cv['skills'])
+        
+        # Clean up
+        os.remove(temp_path)
+        print("🗑️  Temp file removed")
+        
+        # Generate recommendation
+        match_pct = match_result['statistics']['match_percentage']
+        if match_pct >= 70:
+            recommendation = "HIGHLY RECOMMENDED"
+        elif match_pct >= 50:
+            recommendation = "RECOMMENDED"
+        else:
+            recommendation = "NOT RECOMMENDED"
+        
+        print(f"✅ Processing complete: {match_pct}% match")
+        
+        return jsonify({
+            'success': True,
+            'data': {
+                'job_title': job_title,
+                'candidate': {
+                    'name': parsed_cv['name'],
+                    'email': parsed_cv['email'],
+                    'phone': parsed_cv['phone'],
+                    'skills': parsed_cv['skills']
+                },
+                'matching': match_result,
+                'recommendation': {
+                    'status': recommendation,
+                    'score': match_pct
+                }
+            }
+        })
+        
+    except requests.RequestException as e:
+        return jsonify({
+            'success': False,
+            'error': f'Download error: {str(e)}'
+        }), 500
+    
+    except Exception as e:
+        print(f"❌ Error: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
+# ============================================
+# MAIN
+# ============================================
+
+if __name__ == '__main__':
+    print("="*60)
+    print("🚀 CV PARSER & SKILL MATCHER API")
+    print("="*60)
+    print(f"\n🌐 Environment: {FLASK_ENV}")
+    print(f"📍 Port: {PORT}")
+    print(f"🔧 Skills in taxonomy: {len(ALL_SKILLS)}")
+    print("\n✅ Server starting...\n")
+    
+    app.run(host='0.0.0.0', port=PORT, debug=(FLASK_ENV == 'development'))
